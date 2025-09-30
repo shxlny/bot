@@ -1,10 +1,26 @@
 import os
 import telebot
 from dotenv import load_dotenv
-import sqlite3
 from datetime import datetime, timedelta
-from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 import logging
+from telebot.types import ReplyKeyboardMarkup, KeyboardButton
+
+from db_manager import (
+    init_db,
+    get_user_university,
+    set_user_university,
+    get_schedule_from_db,
+    get_personal_modifications,
+    save_permanent_modification
+)
+from keyboards import (
+    create_main_keyboard,
+    create_university_keyboard,
+    create_settings_keyboard,
+    create_modify_keyboard,
+    create_day_of_week_keyboard
+)
+from utils import translate_day_to_russian
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -14,6 +30,7 @@ TOKEN = os.getenv("TG_BOT_TOKEN")
 print("Токен загружен:", bool(TOKEN))
 
 bot = telebot.TeleBot(TOKEN)
+init_db()
 
 user_states = {}
 
@@ -25,91 +42,17 @@ universities = {
 base_date = datetime(2025, 9, 29)
 base_week_is_even = False
 
-def get_schedule_from_db(table_name, week_type, day):
-    conn = sqlite3.connect("base.db")
-    cursor = conn.cursor()
-    
-    query = f"""
-        SELECT time, subject 
-        FROM {table_name} 
-        WHERE week_type = ? AND day = ?
-        ORDER BY time
-    """
-    
-    cursor.execute(query, (week_type, day))
-    rows = cursor.fetchall()
-    conn.close()
-    return rows
 
-def translate_day_to_russian(day_en):
-    translations = {
-        "monday": "Понедельник",
-        "tuesday": "Вторник",
-        "wednesday": "Среда",
-        "thursday": "Четверг",
-        "friday": "Пятница",
-        "saturday": "Суббота",
-        "sunday": "Воскресенье"
-    }
-    return translations.get(day_en, day_en)
-
-def save_permanent_modification(user_id, day, week_type, time, subject):
-    conn = sqlite3.connect("base.db")
-    cursor = conn.cursor()
-    
-    action = 'add'
-
-    delete_query = "DELETE FROM user_modifications WHERE user_id = ? AND day = ? AND week_type = ?"
-    cursor.execute(delete_query, (user_id, day, week_type))
-
-    insert_query = """
-        INSERT INTO user_modifications (user_id, day, week_type, time, subject, action)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """
-    cursor.execute(insert_query, (user_id, day, week_type, time, subject, action))
-    conn.commit()
-    conn.close()
-
-def create_main_keyboard():
-    keyboard = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=False)
-    keyboard.add(KeyboardButton("Сегодня"), KeyboardButton("Завтра"))
-    keyboard.add(KeyboardButton("Вся неделя"))
-    keyboard.add(KeyboardButton("Настройки"))
-    return keyboard
-
-def create_university_keyboard():
-    keyboard = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=False)
-    for uni_name in universities.keys():
-        keyboard.add(KeyboardButton(uni_name))
-    keyboard.add(KeyboardButton("Назад"))
-    return keyboard
-
-def create_settings_keyboard():
-    keyboard = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=False)
-    keyboard.add(KeyboardButton("Изменить ВУЗ"), KeyboardButton("Изменить расписание"))
-    keyboard.add(KeyboardButton("Назад"))
-    return keyboard
-
-def create_modify_keyboard():
-    keyboard = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=False)
-    keyboard.add(KeyboardButton("Единоразово"), KeyboardButton("Навсегда"))
-    keyboard.add(KeyboardButton("Назад"))
-    return keyboard
-
-def create_day_of_week_keyboard():
-    keyboard = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=False)
-    keyboard.add(KeyboardButton("Понедельник"), KeyboardButton("Вторник"))
-    keyboard.add(KeyboardButton("Среда"), KeyboardButton("Четверг"))
-    keyboard.add(KeyboardButton("Пятница"), KeyboardButton("Суббота"))
-    keyboard.add(KeyboardButton("Воскресенье"), KeyboardButton("Назад"))
-    return keyboard
 
 def send_schedule_message(chat_id, day_name_from_button):
-    if chat_id not in user_states:
-        bot.send_message(chat_id, "Пожалуйста, сначала выберите ВУЗ в Настройках.", reply_markup=create_university_keyboard())
+    uni_name = get_user_university(chat_id)
+    
+    if not uni_name:
+        bot.send_message(chat_id, "Пожалуйста, сначала выберите ВУЗ в Настройках.", 
+                         reply_markup=create_university_keyboard(universities)) 
         return
         
-    table_name = user_states[chat_id]
+    table_name = universities[uni_name]
 
     if day_name_from_button == 'Сегодня':
         target_date = datetime.now()
@@ -124,38 +67,24 @@ def send_schedule_message(chat_id, day_name_from_button):
     delta_days = (target_date - base_date).days
     delta_weeks = delta_days // 7
     
-    if not base_week_is_even:
-        is_odd_week = delta_weeks % 2 == 0
-    else:
-        is_odd_week = delta_weeks % 2 != 0
+    is_odd_week = delta_weeks % 2 == 0 if not base_week_is_even else delta_weeks % 2 != 0
         
     week_type = "odd" if is_odd_week else "even"
-    
-    week_type_ru = ''
-    if week_type == 'even':
-        week_type_ru = 'четную'
-    else:
-        week_type_ru = 'нечетную'
+    week_type_ru = 'нечетную' if week_type == 'odd' else 'четную'
 
     if day_name_from_button == 'Вся неделя':
         all_days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
         full_schedule_text = f"Расписание на {week_type_ru} неделю:\n\n"
+        
         for day in all_days:
             lessons = get_schedule_from_db(table_name, week_type, day)
-            
-            conn = sqlite3.connect("base.db")
-            cursor = conn.cursor()
-            personal_query = "SELECT time, subject FROM user_modifications WHERE user_id = ? AND day = ? AND week_type = ? ORDER BY time"
-            cursor.execute(personal_query, (chat_id, translate_day_to_russian(day), week_type))
-            personal_lessons = cursor.fetchall()
-            conn.close()
+            day_ru = translate_day_to_russian(day)
+            personal_lessons = get_personal_modifications(chat_id, day_ru, week_type)
             
             all_lessons = list(lessons) + list(personal_lessons)
             all_lessons.sort() 
             
-            day_name_ru = translate_day_to_russian(day)
-        
-            full_schedule_text += f"**{day_name_ru}**:\n"
+            full_schedule_text += f"**{day_ru}**:\n"
             if all_lessons:
                 full_schedule_text += "\n".join([f"{time} — {subject}" for time, subject in all_lessons]) + "\n\n"
             else:
@@ -167,13 +96,8 @@ def send_schedule_message(chat_id, day_name_from_button):
     day_to_query_db = target_date.strftime('%A').lower()
 
     lessons = get_schedule_from_db(table_name, week_type, day_to_query_db)
-    
-    conn = sqlite3.connect("base.db")
-    cursor = conn.cursor()
-    personal_query = "SELECT time, subject FROM user_modifications WHERE user_id = ? AND day = ? AND week_type = ?"
-    cursor.execute(personal_query, (chat_id, translate_day_to_russian(day_to_query_db), week_type))
-    personal_lessons = cursor.fetchall()
-    conn.close()
+    day_ru = translate_day_to_russian(day_to_query_db)
+    personal_lessons = get_personal_modifications(chat_id, day_ru, week_type)
 
     all_lessons = list(lessons) + list(personal_lessons)
     all_lessons.sort()
@@ -183,7 +107,9 @@ def send_schedule_message(chat_id, day_name_from_button):
         bot.send_message(chat_id, day_text + schedule_text)
     else:
         bot.send_message(chat_id, day_text + "Пар нет 🎉")
-        
+
+
+
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     keyboard = create_main_keyboard()
@@ -200,7 +126,7 @@ def handle_settings(message):
     
 @bot.message_handler(func=lambda message: message.text == "Изменить ВУЗ")
 def handle_change_uni_button(message):
-    keyboard = create_university_keyboard()
+    keyboard = create_university_keyboard(universities)
     bot.send_message(message.chat.id, "Выберите ВУЗ:", reply_markup=keyboard)
 
 @bot.message_handler(func=lambda message: message.text in universities.keys())
@@ -208,19 +134,27 @@ def handle_university_selection(message):
     chat_id = message.chat.id
     selected_uni_name = message.text
     
-    user_states[chat_id] = universities[selected_uni_name]
+    set_user_university(chat_id, selected_uni_name)
     
     keyboard = create_main_keyboard()
     bot.send_message(chat_id, f"Выбран ВУЗ: {selected_uni_name}. Теперь вы можете смотреть расписание.", reply_markup=keyboard)
 
 @bot.message_handler(func=lambda message: message.text == "Назад")
 def handle_back_button(message):
+    if message.chat.id in user_states:
+        del user_states[message.chat.id]
+        
     keyboard = create_main_keyboard()
     bot.send_message(message.chat.id, "Главное меню:", reply_markup=keyboard)
     
 @bot.message_handler(func=lambda message: message.text == "Изменить расписание")
 def handle_modify_schedule(message):
-    user_states[message.chat.id] = {'step': 'awaiting_type'}
+    uni_name = get_user_university(message.chat.id)
+    if not uni_name:
+        bot.send_message(message.chat.id, "Сначала выберите ВУЗ в Настройках.", reply_markup=create_settings_keyboard())
+        return
+        
+    user_states[message.chat.id] = {'step': 'awaiting_type', 'uni_name': uni_name}
     keyboard = create_modify_keyboard()
     bot.send_message(message.chat.id, "Как вы хотите изменить расписание?", reply_markup=keyboard)
 
