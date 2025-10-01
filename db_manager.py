@@ -141,6 +141,14 @@ def format_call_times_for_keyboard(call_rows):
     return buttons
 
 
+def reset_user_modifications(user_id):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM user_modifications WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+
 def save_permanent_modification(user_id, day, week_type, time, subject, ltype=''):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()

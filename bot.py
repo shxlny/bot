@@ -23,6 +23,7 @@ from keyboards import (
 )
 from keyboards import create_call_time_keyboard
 from keyboards import create_type_choice_keyboard, create_edit_choice_keyboard
+from keyboards import create_confirmation_keyboard
 from utils import translate_day_to_russian
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -238,6 +239,30 @@ def handle_university_selection(message):
     
     keyboard = create_main_keyboard()
     bot.send_message(chat_id, f"Выбран ВУЗ: {selected_uni_name}. Теперь вы можете смотреть расписание.", reply_markup=keyboard)
+
+
+@bot.message_handler(func=lambda message: message.text == "Сбросить расписание")
+def handle_reset_request(message):
+    chat_id = message.chat.id
+    user_states[chat_id] = {'step': 'awaiting_reset_confirmation'}
+    keyboard = create_confirmation_keyboard()
+    bot.send_message(chat_id, "Вы уверены, что хотите удалить все ваши персональные изменения и вернуть расписание к базе? Это действие необратимо.", reply_markup=keyboard)
+
+
+@bot.message_handler(func=lambda message: message.chat.id in user_states and user_states[message.chat.id].get('step') == 'awaiting_reset_confirmation')
+def handle_reset_confirmation(message):
+    chat_id = message.chat.id
+    text = message.text
+    if text == "Да, сбросить":
+        from db_manager import reset_user_modifications
+        reset_user_modifications(chat_id)
+        bot.send_message(chat_id, "Все ваши персональные изменения удалены. Теперь показывается базовое расписание.")
+    else:
+        bot.send_message(chat_id, "Сброс отменён.")
+    if chat_id in user_states:
+        del user_states[chat_id]
+    keyboard = create_main_keyboard()
+    bot.send_message(chat_id, "Главное меню:", reply_markup=keyboard)
 
 @bot.message_handler(func=lambda message: message.text == "Назад")
 def handle_back_button(message):
